@@ -1,14 +1,16 @@
-# array_plot_patterns_4port.py
+# array_plotter.py
 #
-# GUI tool to combine 4 embedded-element farfield .emff files with per-element phase shifts
-# and plot array pattern cuts in XY/XZ/YZ, with selectable plane(s) and plot style.
+# GUI tool to combine N embedded-element farfield .emff files with per-element
+# amplitude and phase excitation, then plot array pattern cuts in XY/XZ/YZ.
+# Supports 2 to 16 ports. Amplitude and phase controls are created dynamically
+# after loading the folder.
 #
 # Usage:
-#   python array_plot_patterns_4port.py
+#   python array_plotter.py
 #
 # Expected folder contents:
-#   ..._P1.emff, ..._P2.emff, ..._P3.emff, ..._P4.emff   (recommended naming)
-# or at least 4 *.emff files (will take first 4 sorted)
+#   ..._P1.emff, ..._P2.emff, ...  (recommended naming)
+# or any *.emff files found in the selected folder (2-16 files)
 
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -204,10 +206,14 @@ def mag_over_eiso(Etheta, Ephi, pol: str):
 
 # ---------------------- Array combiner app ----------------------
 
-class ArrayPattern4PortApp:
+MIN_PORTS = 2
+MAX_PORTS = 16
+
+
+class ArrayPatternApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("EMerge 4-Element Array Pattern Viewer (EMFF)")
+        self.root.title("EMerge Array Pattern Viewer (EMFF)")
 
         self.run_dir: Path | None = None
         self.emff_paths: list[Path] = []
@@ -216,9 +222,16 @@ class ArrayPattern4PortApp:
         self.theta = None            # radians (Nt,)
         self.phi = None              # radians (Np,)
 
-        self.elements = []
+        self.elements: list[dict] = []
 
-        outer = tk.Frame(root, padx=10, pady=10)
+        # Per-element excitation vars; populated in _rebuild_element_controls()
+        self.amp_vars: list[tk.StringVar] = []
+        self.phase_vars: list[tk.StringVar] = []
+
+        self._build_ui()
+
+    def _build_ui(self):
+        outer = tk.Frame(self.root, padx=10, pady=10)
         outer.pack(fill="both", expand=True)
 
         top = tk.Frame(outer)
@@ -227,7 +240,7 @@ class ArrayPattern4PortApp:
         tk.Button(top, text="LOAD FOLDER", width=18, command=self.load_folder).pack(side="left", padx=4)
         tk.Button(top, text="PLOT", width=18, command=self.plot_selected).pack(side="left", padx=4)
 
-        self.status = tk.StringVar(value="Load a folder with 4 embedded-element *.emff files.")
+        self.status = tk.StringVar(value=f"Load a folder with {MIN_PORTS}-{MAX_PORTS} embedded-element *.emff files.")
         tk.Label(outer, textvariable=self.status, anchor="w").pack(fill="x", pady=(0, 8))
 
         mid = tk.Frame(outer)
@@ -241,7 +254,7 @@ class ArrayPattern4PortApp:
         self.freq_list = tk.Listbox(left, height=18, width=34)
         self.freq_list.pack(fill="both", expand=True)
 
-        # RIGHT: options
+        # CENTER: options panel
         right = tk.Frame(mid)
         right.pack(side="left", fill="y")
 
@@ -250,7 +263,7 @@ class ArrayPattern4PortApp:
         self.plane_list = tk.Listbox(right, height=3, exportselection=False, selectmode=tk.MULTIPLE, width=12)
         for p in ("XY", "XZ", "YZ"):
             self.plane_list.insert(tk.END, p)
-        self.plane_list.selection_set(0)  # default XY
+        self.plane_list.selection_set(0)
         self.plane_list.pack(anchor="w", pady=(0, 10))
 
         # Plot type (single-select)
@@ -258,7 +271,7 @@ class ArrayPattern4PortApp:
         self.plot_type_list = tk.Listbox(right, height=2, exportselection=False, selectmode=tk.SINGLE, width=12)
         for t in ("Polar", "Cartesian"):
             self.plot_type_list.insert(tk.END, t)
-        self.plot_type_list.selection_set(0)  # default Polar
+        self.plot_type_list.selection_set(0)
         self.plot_type_list.pack(anchor="w", pady=(0, 10))
 
         # Polarization
@@ -266,7 +279,7 @@ class ArrayPattern4PortApp:
         self.pol_var = tk.StringVar(value="ABS")
         tk.OptionMenu(right, self.pol_var, "ABS", "THETA", "PHI", "RHCP", "LHCP").pack(anchor="w", pady=(0, 8))
 
-        # Limits
+        # dB limits
         tk.Label(right, text="dB floor:").pack(anchor="w")
         self.floor_var = tk.StringVar(value="-30")
         tk.Entry(right, textvariable=self.floor_var, width=8).pack(anchor="w", pady=(0, 8))
@@ -278,45 +291,126 @@ class ArrayPattern4PortApp:
         self.norm_var = tk.BooleanVar(value=False)
         tk.Checkbutton(right, text="Normalize (0 dB max)", variable=self.norm_var).pack(anchor="w", pady=(0, 10))
 
-        # Phase entries
-        tk.Label(right, text="Phase shifts (deg):").pack(anchor="w")
-        self.phase_vars = [tk.StringVar(value="0") for _ in range(4)]
-        for k in range(4):
-            row = tk.Frame(right)
-            row.pack(anchor="w", pady=2)
-            tk.Label(row, text=f"P{k+1}:", width=4, anchor="w").pack(side="left")
-            tk.Entry(row, textvariable=self.phase_vars[k], width=8).pack(side="left")
-
         self.info = tk.StringVar(value="")
-        tk.Label(right, textvariable=self.info, justify="left", anchor="w").pack(anchor="w", pady=(10, 0))
+        tk.Label(right, textvariable=self.info, justify="left", anchor="w").pack(anchor="w", pady=(4, 0))
+
+        # RIGHT: scrollable per-element excitation controls
+        exc_outer = tk.Frame(mid)
+        exc_outer.pack(side="left", fill="y", padx=(14, 0))
+
+        tk.Label(exc_outer, text="Element excitation:").pack(anchor="w")
+
+        hdrs = tk.Frame(exc_outer)
+        hdrs.pack(anchor="w")
+        tk.Label(hdrs, text="Port", width=6, anchor="w").pack(side="left")
+        tk.Label(hdrs, text="Ampl.", width=7, anchor="w").pack(side="left")
+        tk.Label(hdrs, text="Phase (deg)", width=10, anchor="w").pack(side="left")
+
+        # scrollable canvas for the rows
+        canvas = tk.Canvas(exc_outer, width=220, height=340, highlightthickness=0)
+        vsb = tk.Scrollbar(exc_outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        self.exc_frame = tk.Frame(canvas)
+        self._exc_canvas_win = canvas.create_window((0, 0), window=self.exc_frame, anchor="nw")
+
+        def _on_frame_resize(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        self.exc_frame.bind("<Configure>", _on_frame_resize)
+        self._exc_canvas = canvas
+
+    # ------------------------------------------------------------------ #
+    # Dynamic element-control builder                                      #
+    # ------------------------------------------------------------------ #
+
+    def _rebuild_element_controls(self, n: int):
+        """Destroy existing rows and create n amplitude + phase entry rows."""
+        for widget in self.exc_frame.winfo_children():
+            widget.destroy()
+
+        self.amp_vars = []
+        self.phase_vars = []
+
+        for k in range(n):
+            row = tk.Frame(self.exc_frame)
+            row.pack(anchor="w", pady=2)
+
+            tk.Label(row, text=f"P{k+1}", width=6, anchor="w").pack(side="left")
+
+            amp_v = tk.StringVar(value="1.0")
+            tk.Entry(row, textvariable=amp_v, width=7).pack(side="left", padx=(0, 4))
+
+            ph_v = tk.StringVar(value="0")
+            tk.Entry(row, textvariable=ph_v, width=10).pack(side="left")
+
+            self.amp_vars.append(amp_v)
+            self.phase_vars.append(ph_v)
+
+        # refresh canvas scroll region
+        self.exc_frame.update_idletasks()
+        self._exc_canvas.configure(scrollregion=self._exc_canvas.bbox("all"))
+
+    # ------------------------------------------------------------------ #
+    # Folder loading                                                       #
+    # ------------------------------------------------------------------ #
 
     def load_folder(self):
-        d = filedialog.askdirectory(title="Select folder containing 4x *.emff (P1..P4)")
+        d = filedialog.askdirectory(
+            title=f"Select folder containing {MIN_PORTS}-{MAX_PORTS} *.emff files"
+        )
         if not d:
             return
         run_dir = Path(d)
 
         emffs = sorted(run_dir.glob("*.emff"))
-        if len(emffs) < 4:
-            messagebox.showerror("Not found", f"Need at least 4 *.emff files in:\n{run_dir}")
+        nf = len(emffs)
+
+        if nf < MIN_PORTS:
+            messagebox.showerror(
+                "Not enough files",
+                f"Found {nf} *.emff file(s) in:\n{run_dir}\n"
+                f"Need at least {MIN_PORTS}.",
+            )
             return
 
-        # Prefer *_P1..P4 naming if present
-        def find_port(pn: int):
-            hits = [p for p in emffs if f"_P{pn}" in p.stem or p.stem.endswith(f"P{pn}")]
-            return hits[0] if hits else None
+        if nf > MAX_PORTS:
+            messagebox.showwarning(
+                "Too many files",
+                f"Found {nf} *.emff files. Using first {MAX_PORTS}.",
+            )
+            emffs = emffs[:MAX_PORTS]
+            nf = MAX_PORTS
 
-        ports = [find_port(i) for i in range(1, 5)]
-        selected = ports if all(p is not None for p in ports) else emffs[:4]
+        # Sort by port number if names contain _P<n>
+        def port_sort_key(p: Path):
+            for part in reversed(p.stem.split("_")):
+                if part.upper().startswith("P"):
+                    try:
+                        return int(part[1:])
+                    except ValueError:
+                        pass
+            return 9999
+
+        emffs = sorted(emffs, key=port_sort_key)
 
         elements = []
         ref_freqs = ref_theta_deg = ref_phi_deg = None
 
         try:
-            for p in selected:
+            for p in emffs:
                 freqs, theta_deg, phi_deg, Ex, Ey, Ez = parse_emff(p)
-                elements.append({"path": p, "freqs": freqs, "theta_deg": theta_deg, "phi_deg": phi_deg,
-                                 "Ex": Ex, "Ey": Ey, "Ez": Ez})
+                elements.append({
+                    "path": p,
+                    "freqs": freqs,
+                    "theta_deg": theta_deg,
+                    "phi_deg": phi_deg,
+                    "Ex": Ex,
+                    "Ey": Ey,
+                    "Ez": Ez,
+                })
 
                 if ref_freqs is None:
                     ref_freqs, ref_theta_deg, ref_phi_deg = freqs, theta_deg, phi_deg
@@ -346,30 +440,31 @@ class ArrayPattern4PortApp:
         self.freq_list.selection_clear(0, tk.END)
         self.freq_list.selection_set(0)
 
-        self.status.set(f"Loaded 4 EMFF files from: {run_dir.name}")
+        self._rebuild_element_controls(nf)
+
+        self.status.set(f"Loaded {nf} EMFF file(s) from: {run_dir.name}")
         self.info.set(
-            f"Files:\n- " + "\n- ".join([p.name for p in self.emff_paths]) + "\n"
+            f"{nf} elements loaded\n"
             f"Freq points: {len(self.freqs)}\n"
             f"Theta: {len(self.theta)} pts\n"
             f"Phi: {len(self.phi)} pts"
         )
 
+    # ------------------------------------------------------------------ #
+    # Selection helpers                                                    #
+    # ------------------------------------------------------------------ #
+
     def _selected_freq_index(self):
         sel = self.freq_list.curselection()
-        if not sel:
-            return None
-        return int(sel[0])
+        return int(sel[0]) if sel else None
 
     def _selected_planes(self):
         idxs = self.plane_list.curselection()
-        planes = [self.plane_list.get(i).upper() for i in idxs]
-        return planes
+        return [self.plane_list.get(i).upper() for i in idxs]
 
     def _selected_plot_type(self):
         sel = self.plot_type_list.curselection()
-        if not sel:
-            return "POLAR"
-        return self.plot_type_list.get(sel[0]).upper()
+        return self.plot_type_list.get(sel[0]).upper() if sel else "POLAR"
 
     def _plane_spec(self, plane: str):
         plane = plane.upper()
@@ -380,6 +475,10 @@ class ArrayPattern4PortApp:
         if plane == "YZ":
             return (1, 0, 0), (0, 1, 0)
         raise ValueError(f"Unknown plane '{plane}'")
+
+    # ------------------------------------------------------------------ #
+    # Plane-cut extraction (unchanged logic)                               #
+    # ------------------------------------------------------------------ #
 
     def _extract_plane_cut_from_element(self, el, idx_f: int, plane: str):
         plane_normal, ref_dir = self._plane_spec(plane)
@@ -401,12 +500,10 @@ class ArrayPattern4PortApp:
             ip0 = nearest_index(phi, 0.0)
             ip1 = nearest_index(phi, np.pi)
 
-            th_a = theta.copy()
-            ph_a = phi[ip0] * np.ones_like(theta)
+            th_a, ph_a = theta.copy(), phi[ip0] * np.ones_like(theta)
             Ex_a, Ey_a, Ez_a = Ex[:, ip0], Ey[:, ip0], Ez[:, ip0]
 
-            th_b = theta[::-1].copy()
-            ph_b = phi[ip1] * np.ones_like(theta)
+            th_b, ph_b = theta[::-1].copy(), phi[ip1] * np.ones_like(theta)
             Ex_b, Ey_b, Ez_b = Ex[::-1, ip1], Ey[::-1, ip1], Ez[::-1, ip1]
 
             th = np.concatenate([th_a, th_b])
@@ -419,12 +516,10 @@ class ArrayPattern4PortApp:
             ip0 = nearest_index(phi, np.pi / 2)
             ip1 = nearest_index(phi, -np.pi / 2)
 
-            th_a = theta.copy()
-            ph_a = phi[ip0] * np.ones_like(theta)
+            th_a, ph_a = theta.copy(), phi[ip0] * np.ones_like(theta)
             Ex_a, Ey_a, Ez_a = Ex[:, ip0], Ey[:, ip0], Ez[:, ip0]
 
-            th_b = theta[::-1].copy()
-            ph_b = phi[ip1] * np.ones_like(theta)
+            th_b, ph_b = theta[::-1].copy(), phi[ip1] * np.ones_like(theta)
             Ex_b, Ey_b, Ez_b = Ex[::-1, ip1], Ey[::-1, ip1], Ez[::-1, ip1]
 
             th = np.concatenate([th_a, th_b])
@@ -438,22 +533,34 @@ class ArrayPattern4PortApp:
 
         Etheta, Ephi = cart_to_sph_E(Exs, Eys, Ezs, th, ph)
         ang = inplane_angle(th, ph, plane_normal, ref_dir)
-
         order = np.argsort(ang)
         return ang[order], Etheta[order], Ephi[order]
 
-    def _phase_weights(self):
-        ph_deg = []
-        for k in range(4):
+    # ------------------------------------------------------------------ #
+    # Complex excitation weights (amplitude × exp(jφ))                   #
+    # ------------------------------------------------------------------ #
+
+    def _element_weights(self):
+        n = len(self.elements)
+        weights = np.zeros(n, dtype=np.complex128)
+        for k in range(n):
             try:
-                ph_deg.append(float(self.phase_vars[k].get().strip()))
+                amp = float(self.amp_vars[k].get().strip())
+            except Exception:
+                raise ValueError(f"Invalid amplitude for P{k+1}: '{self.amp_vars[k].get()}'")
+            try:
+                ph_deg = float(self.phase_vars[k].get().strip())
             except Exception:
                 raise ValueError(f"Invalid phase for P{k+1}: '{self.phase_vars[k].get()}'")
-        ph_rad = np.deg2rad(np.array(ph_deg, dtype=float))
-        return np.exp(1j * ph_rad)
+            weights[k] = amp * np.exp(1j * np.deg2rad(ph_deg))
+        return weights
+
+    # ------------------------------------------------------------------ #
+    # Combined pattern computation                                         #
+    # ------------------------------------------------------------------ #
 
     def _compute_plane_db(self, idx_f: int, plane: str, pol: str, floor_db: float, normalize: bool):
-        w = self._phase_weights()
+        w = self._element_weights()
 
         ang_ref = None
         Etheta_sum = None
@@ -480,6 +587,10 @@ class ArrayPattern4PortApp:
 
         return ang_ref, db
 
+    # ------------------------------------------------------------------ #
+    # Plotting                                                             #
+    # ------------------------------------------------------------------ #
+
     def _plot_polar(self, ang, db, plane, title, floor_db, db_max):
         fig = plt.figure()
         ax = fig.add_subplot(111, projection="polar")
@@ -489,24 +600,20 @@ class ArrayPattern4PortApp:
         plt.show()
 
     def _plot_cartesian(self, ang, db, plane, title, floor_db, db_max):
-        # Map in-plane angle to degrees for a clean cut-style plot
         x_deg = np.rad2deg(ang)
-
         fig = plt.figure()
         ax = fig.add_subplot(111)
         ax.set_title(title)
         ax.plot(x_deg, db)
-
         ax.set_xlabel(f"{plane} in-plane angle [deg]")
         ax.set_ylabel("Gain [dBi] (relative to EISO)")
-
         ax.set_ylim(floor_db, db_max)
         ax.grid(True)
         plt.show()
 
     def plot_selected(self):
         if self.freqs is None or not self.elements:
-            messagebox.showinfo("Nothing loaded", "Load a folder with 4 .emff files first.")
+            messagebox.showinfo("Nothing loaded", "Load a folder with *.emff files first.")
             return
 
         idx = self._selected_freq_index()
@@ -530,13 +637,17 @@ class ArrayPattern4PortApp:
             return
 
         try:
-            _ = self._phase_weights()
+            w = self._element_weights()
         except Exception as e:
-            messagebox.showerror("Invalid phase", str(e))
+            messagebox.showerror("Invalid excitation", str(e))
             return
 
         fsel = float(self.freqs[idx])
-        phases_txt = ", ".join([v.get().strip() for v in self.phase_vars])
+        n = len(self.elements)
+        excitation_txt = "  ".join(
+            f"P{k+1}: {abs(w[k]):.2f}@{np.rad2deg(np.angle(w[k])):.0f}deg"
+            for k in range(n)
+        )
 
         try:
             for plane in planes:
@@ -545,12 +656,12 @@ class ArrayPattern4PortApp:
                     plane=plane,
                     pol=pol,
                     floor_db=floor_db,
-                    normalize=self.norm_var.get()
+                    normalize=self.norm_var.get(),
                 )
 
                 title = (
-                    f"ARRAY {plane} — {pol} @ {fsel/1e9:.6f} GHz\n"
-                    f"Phases: {phases_txt} deg"
+                    f"{n}-element ARRAY {plane} — {pol} @ {fsel/1e9:.6f} GHz\n"
+                    f"{excitation_txt}"
                 )
 
                 if plot_type == "POLAR":
@@ -565,7 +676,7 @@ class ArrayPattern4PortApp:
 
 def main():
     root = tk.Tk()
-    ArrayPattern4PortApp(root)
+    ArrayPatternApp(root)
     root.mainloop()
 
 

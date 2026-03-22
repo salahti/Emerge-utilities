@@ -571,7 +571,7 @@ def main():
             port_dirs.append(direction)
 
             port_name = pc.get("name", f"P{i}")
-            print(f"Port {i} ({port_name}): z0={z0:.1f}Ω width={w*1e3:.3f}mm height={h*1e3:.3f}mm")
+            print(f"Port {i} ({port_name}): z0={z0:.1f} ohm width={w*1e3:.3f}mm height={h*1e3:.3f}mm")
 
         # --- Commit geometry
         model.commit_geometry()

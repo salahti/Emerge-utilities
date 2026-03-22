@@ -68,6 +68,8 @@ class SimulationGui:
         self.cfg = default_config()
         self.current_json_path: Path | None = None
         self.run_process = None
+        self.solid_index_map: list[tuple[str, int]] = []
+        self.surface_index_map: list[int] = []
 
         self._build_ui()
         self.refresh_lists()
@@ -80,8 +82,11 @@ class SimulationGui:
         top_actions.pack(fill=tk.X)
 
         ttk.Button(top_actions, text="LOAD SOLID", command=self.load_solid).pack(side=tk.LEFT, padx=4)
+        ttk.Button(top_actions, text="REMOVE SOLID", command=self.remove_selected_solid).pack(side=tk.LEFT, padx=4)
         ttk.Button(top_actions, text="LOAD SURFACE", command=self.load_surface).pack(side=tk.LEFT, padx=4)
+        ttk.Button(top_actions, text="REMOVE SURFACE", command=self.remove_selected_surface).pack(side=tk.LEFT, padx=4)
         ttk.Button(top_actions, text="ADD PORT", command=self.add_port).pack(side=tk.LEFT, padx=4)
+        ttk.Button(top_actions, text="REMOVE PORT", command=self.remove_selected_port).pack(side=tk.LEFT, padx=4)
         ttk.Button(top_actions, text="DEFINE FREQUENCIES", command=self.define_frequencies).pack(side=tk.LEFT, padx=4)
         ttk.Button(top_actions, text="AIRBOX", command=self.define_airbox).pack(side=tk.LEFT, padx=4)
 
@@ -114,6 +119,14 @@ class SimulationGui:
             variable=self.ff_enable_var,
             command=self.on_toggle_farfield,
         ).grid(row=1, column=2, columnspan=2, sticky="w", pady=(6, 0))
+
+        self.freq_info_var = tk.StringVar(value="")
+        ttk.Label(settings, text="Frequencies").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(settings, textvariable=self.freq_info_var).grid(
+            row=2, column=1, columnspan=3, sticky="w", padx=6, pady=(6, 0)
+        )
+
+        self._update_frequency_info()
 
         file_actions = ttk.Frame(outer)
         file_actions.pack(fill=tk.X, pady=(2, 8))
@@ -152,13 +165,16 @@ class SimulationGui:
         self.solids_list.delete(0, tk.END)
         self.surfaces_list.delete(0, tk.END)
         self.ports_list.delete(0, tk.END)
+        self.solid_index_map = []
+        self.surface_index_map = []
 
-        for d in self.cfg["imports"]["dielectrics"]:
+        for d_idx, d in enumerate(self.cfg["imports"]["dielectrics"]):
             mat = d.get("material", {})
             txt = f"DIELECTRIC | {d['name']} | er={mat.get('er')} tand={mat.get('tand')} | {d['file']}"
             self.solids_list.insert(tk.END, txt)
+            self.solid_index_map.append(("dielectrics", d_idx))
 
-        for m in self.cfg["imports"]["metals"]:
+        for m_idx, m in enumerate(self.cfg["imports"]["metals"]):
             mat = m.get("material", {})
             kind = mat.get("kind", "")
             if kind == "pec_volume":
@@ -167,8 +183,9 @@ class SimulationGui:
                 spec = f"sigma={mat.get('sigma')}"
             txt = f"METAL | {m['name']} | {spec} | {m['file']}"
             self.solids_list.insert(tk.END, txt)
+            self.solid_index_map.append(("metals", m_idx))
 
-        for s in self.cfg["imports"]["surfaces"]:
+        for s_idx, s in enumerate(self.cfg["imports"]["surfaces"]):
             bc = s.get("bc", {})
             kind = bc.get("kind", "")
             if kind == "pec":
@@ -177,6 +194,7 @@ class SimulationGui:
                 spec = f"surface_impedance sigma={bc.get('sigma')}"
             txt = f"SURFACE | {s['name']} | {spec} | {s['file']}"
             self.surfaces_list.insert(tk.END, txt)
+            self.surface_index_map.append(s_idx)
 
         for idx, p in enumerate(self.cfg["ports"], start=1):
             txt = (
@@ -185,6 +203,68 @@ class SimulationGui:
                 f"w={p.get('width')} fs={p.get('face_size')} z0={p.get('z0')}"
             )
             self.ports_list.insert(tk.END, txt)
+
+    def remove_selected_solid(self):
+        selection = self.solids_list.curselection()
+        if not selection:
+            messagebox.showinfo("Remove solid", "Select a solid entry to remove")
+            return
+
+        list_idx = int(selection[0])
+        if list_idx < 0 or list_idx >= len(self.solid_index_map):
+            messagebox.showerror("Remove solid", "Invalid solid selection")
+            return
+
+        group, item_idx = self.solid_index_map[list_idx]
+        item = self.cfg["imports"][group][item_idx]
+        item_name = item.get("name", "unnamed")
+
+        self.cfg["imports"][group].pop(item_idx)
+        self.refresh_lists()
+        self.status_var.set(f"Removed solid: {item_name}")
+
+    def remove_selected_surface(self):
+        selection = self.surfaces_list.curselection()
+        if not selection:
+            messagebox.showinfo("Remove surface", "Select a surface entry to remove")
+            return
+
+        list_idx = int(selection[0])
+        if list_idx < 0 or list_idx >= len(self.surface_index_map):
+            messagebox.showerror("Remove surface", "Invalid surface selection")
+            return
+
+        item_idx = self.surface_index_map[list_idx]
+        item = self.cfg["imports"]["surfaces"][item_idx]
+        item_name = item.get("name", "unnamed")
+
+        self.cfg["imports"]["surfaces"].pop(item_idx)
+        self.refresh_lists()
+        self.status_var.set(f"Removed surface: {item_name}")
+
+    def remove_selected_port(self):
+        selection = self.ports_list.curselection()
+        if not selection:
+            messagebox.showinfo("Remove port", "Select a port entry to remove")
+            return
+
+        item_idx = int(selection[0])
+        if item_idx < 0 or item_idx >= len(self.cfg["ports"]):
+            messagebox.showerror("Remove port", "Invalid port selection")
+            return
+
+        item = self.cfg["ports"][item_idx]
+        item_name = item.get("name", f"P{item_idx + 1}")
+
+        self.cfg["ports"].pop(item_idx)
+
+        # Renumber default-style port names to keep ordering clean.
+        for i, p in enumerate(self.cfg["ports"], start=1):
+            if p.get("name", "").startswith("P"):
+                p["name"] = f"P{i}"
+
+        self.refresh_lists()
+        self.status_var.set(f"Removed port: {item_name}")
 
     def load_solid(self):
         step_file = filedialog.askopenfilename(
@@ -409,6 +489,7 @@ class SimulationGui:
         self.cfg["sweep"]["fstart_hz"] = float(fstart)
         self.cfg["sweep"]["fstop_hz"] = float(fstop)
         self.cfg["sweep"]["npoints"] = int(npoints)
+        self._update_frequency_info()
         self.status_var.set("Frequencies updated")
 
     def define_airbox(self):
@@ -439,6 +520,13 @@ class SimulationGui:
 
     def on_toggle_farfield(self):
         self.cfg["farfield_export"]["enable"] = bool(self.ff_enable_var.get())
+
+    def _update_frequency_info(self):
+        sweep = self.cfg.get("sweep", {})
+        fstart = float(sweep.get("fstart_hz", 0.0))
+        fstop = float(sweep.get("fstop_hz", 0.0))
+        npoints = int(sweep.get("npoints", 0))
+        self.freq_info_var.set(f"start={fstart:.3e} Hz   stop={fstop:.3e} Hz   npoints={npoints}")
 
     def _sync_form_to_config(self):
         self.cfg["outputs"]["run_name"] = self.run_name_var.get().strip() or "emerge_run"
@@ -503,11 +591,16 @@ class SimulationGui:
         self.cfg["mesh"].setdefault("resolution", 0.2)
         self.cfg.setdefault("farfield_export", {})
         self.cfg["farfield_export"].setdefault("enable", True)
+        self.cfg.setdefault("sweep", {})
+        self.cfg["sweep"].setdefault("fstart_hz", 6.5e9)
+        self.cfg["sweep"].setdefault("fstop_hz", 9.0e9)
+        self.cfg["sweep"].setdefault("npoints", 28)
 
         self.run_name_var.set(self.cfg["outputs"]["run_name"])
         self.results_dir_var.set(self.cfg["outputs"]["results_dir"])
         self.mesh_res_var.set(float(self.cfg["mesh"]["resolution"]))
         self.ff_enable_var.set(bool(self.cfg["farfield_export"]["enable"]))
+        self._update_frequency_info()
 
         self.refresh_lists()
         self.status_var.set(f"Loaded: {path.name}")

@@ -1,0 +1,91 @@
+{
+  "comment": "",
+  "units": "mm",
+  "sweep": {
+    "fstart_hz": 2000000000.0,
+    "fstop_hz": 3000000000.0,
+    "npoints": 11
+  },
+  "mesh": {
+    "resolution": 0.2,
+    "air_margin": 20.0
+  },
+  "air_sphere": {
+    "radius": 50.0,
+    "center": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "ports": [
+    {
+      "name": "P1",
+      "type": "lumped_z",
+      "p1": [
+        -30.0,
+        0.0,
+        -0.15
+      ],
+      "p2": [
+        -30.0,
+        0.0,
+        0.15
+      ],
+      "direction": "z",
+      "width": 1.0,
+      "face_size": 0.5,
+      "z0": 50.0
+    },
+    {
+      "name": "P2",
+      "type": "lumped_z",
+      "p1": [
+        30.0,
+        0.0,
+        -0.15
+      ],
+      "p2": [
+        30.0,
+        0.0,
+        0.15
+      ],
+      "direction": "z",
+      "width": 1.0,
+      "face_size": 0.5,
+      "z0": 50.0
+    }
+  ],
+  "imports": {
+    "dielectrics": [],
+    "metals": [
+      {
+        "name": "dipole_array v2",
+        "file": "geometry/two_port_test_geometry/dipole_array v2.step",
+        "material": {
+          "kind": "pec_volume"
+        },
+        "mesh": {
+          "boundary_size": 2.0
+        }
+      }
+    ],
+    "surfaces": []
+  },
+  "preview": {
+    "show_geometry": false,
+    "show_mesh": false
+  },
+  "outputs": {
+    "results_dir": "results",
+    "run_name": "emerge_run"
+  },
+  "farfield_export": {
+    "enable": true,
+    "theta_points": 181,
+    "phi_points": 361,
+    "basename": "farfield_3d",
+    "precision": 6
+  },
+  "full_model_step": "geometry/full_model.step"
+}

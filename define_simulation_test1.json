@@ -1,0 +1,106 @@
+{
+  "comment": "",
+  "units": "mm",
+  "sweep": {
+    "fstart_hz": 6500000000.0,
+    "fstop_hz": 9000000000.0,
+    "npoints": 11
+  },
+  "mesh": {
+    "resolution": 0.2,
+    "air_margin": 20.0
+  },
+  "air_sphere": {
+    "radius": 20.0,
+    "center": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "ports": [
+    {
+      "name": "P1",
+      "type": "lumped_z",
+      "p1": [
+        -2.0,
+        0.0,
+        0.0
+      ],
+      "p2": [
+        -2.0,
+        0.0,
+        0.3
+      ],
+      "direction": "z",
+      "width": 0.5,
+      "face_size": 0.25,
+      "z0": 50.0
+    }
+  ],
+  "imports": {
+    "dielectrics": [
+      {
+        "name": "dielectric",
+        "file": "geometry/dielectric.step",
+        "material": {
+          "er": 3.48,
+          "tand": 0.004
+        },
+        "mesh": {
+          "boundary_size": 1.0
+        }
+      }
+    ],
+    "metals": [
+      {
+        "name": "metals",
+        "file": "geometry/metals.step",
+        "material": {
+          "kind": "pec_volume"
+        },
+        "mesh": {
+          "boundary_size": 0.5
+        }
+      }
+    ],
+    "surfaces": [
+      {
+        "name": "patch",
+        "file": "geometry/patch.step",
+        "bc": {
+          "kind": "pec"
+        },
+        "mesh": {
+          "face_size": 0.5
+        }
+      },
+      {
+        "name": "gnd",
+        "file": "geometry/gnd.step",
+        "bc": {
+          "kind": "pec"
+        },
+        "mesh": {
+          "face_size": 2.0
+        }
+      }
+    ]
+  },
+  "preview": {
+    "show_geometry": false,
+    "show_mesh": false
+  },
+  "outputs": {
+    "results_dir": "results",
+    "run_name": "emerge_run"
+  },
+  "farfield_export": {
+    "enable": true,
+    "theta_points": 181,
+    "phi_points": 361,
+    "basename": "farfield_3d",
+    "precision": 6
+  },
+  "full_model_step": "geometry/full_model.step"
+}
