@@ -120,10 +120,26 @@ class SimulationGui:
             command=self.on_toggle_farfield,
         ).grid(row=1, column=2, columnspan=2, sticky="w", pady=(6, 0))
 
+        self.show_geom_var = tk.BooleanVar(value=bool(self.cfg["preview"]["show_geometry"]))
+        ttk.Checkbutton(
+            settings,
+            text="Show Geometry",
+            variable=self.show_geom_var,
+            command=self.on_toggle_show_geometry,
+        ).grid(row=2, column=2, sticky="w", pady=(6, 0))
+
+        self.show_mesh_var = tk.BooleanVar(value=bool(self.cfg["preview"]["show_mesh"]))
+        ttk.Checkbutton(
+            settings,
+            text="Show Mesh",
+            variable=self.show_mesh_var,
+            command=self.on_toggle_show_mesh,
+        ).grid(row=2, column=3, sticky="w", pady=(6, 0))
+
         self.freq_info_var = tk.StringVar(value="")
-        ttk.Label(settings, text="Frequencies").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="Frequencies").grid(row=3, column=0, sticky="w", pady=(6, 0))
         ttk.Label(settings, textvariable=self.freq_info_var).grid(
-            row=2, column=1, columnspan=3, sticky="w", padx=6, pady=(6, 0)
+            row=3, column=1, columnspan=3, sticky="w", padx=6, pady=(6, 0)
         )
 
         self._update_frequency_info()
@@ -521,6 +537,12 @@ class SimulationGui:
     def on_toggle_farfield(self):
         self.cfg["farfield_export"]["enable"] = bool(self.ff_enable_var.get())
 
+    def on_toggle_show_geometry(self):
+        self.cfg["preview"]["show_geometry"] = bool(self.show_geom_var.get())
+
+    def on_toggle_show_mesh(self):
+        self.cfg["preview"]["show_mesh"] = bool(self.show_mesh_var.get())
+
     def _update_frequency_info(self):
         sweep = self.cfg.get("sweep", {})
         fstart = float(sweep.get("fstart_hz", 0.0))
@@ -533,6 +555,8 @@ class SimulationGui:
         self.cfg["outputs"]["results_dir"] = self.results_dir_var.get().strip() or "results"
         self.cfg["mesh"]["resolution"] = float(self.mesh_res_var.get())
         self.cfg["farfield_export"]["enable"] = bool(self.ff_enable_var.get())
+        self.cfg["preview"]["show_geometry"] = bool(self.show_geom_var.get())
+        self.cfg["preview"]["show_mesh"] = bool(self.show_mesh_var.get())
 
     def _to_rel_path(self, selected_file: str) -> str:
         p = Path(selected_file).resolve()
@@ -591,6 +615,9 @@ class SimulationGui:
         self.cfg["mesh"].setdefault("resolution", 0.2)
         self.cfg.setdefault("farfield_export", {})
         self.cfg["farfield_export"].setdefault("enable", True)
+        self.cfg.setdefault("preview", {})
+        self.cfg["preview"].setdefault("show_geometry", False)
+        self.cfg["preview"].setdefault("show_mesh", False)
         self.cfg.setdefault("sweep", {})
         self.cfg["sweep"].setdefault("fstart_hz", 6.5e9)
         self.cfg["sweep"].setdefault("fstop_hz", 9.0e9)
@@ -600,6 +627,8 @@ class SimulationGui:
         self.results_dir_var.set(self.cfg["outputs"]["results_dir"])
         self.mesh_res_var.set(float(self.cfg["mesh"]["resolution"]))
         self.ff_enable_var.set(bool(self.cfg["farfield_export"]["enable"]))
+        self.show_geom_var.set(bool(self.cfg["preview"]["show_geometry"]))
+        self.show_mesh_var.set(bool(self.cfg["preview"]["show_mesh"]))
         self._update_frequency_info()
 
         self.refresh_lists()
