@@ -1,0 +1,162 @@
+{
+  "comment": "",
+  "units": "mm",
+  "sweep": {
+    "fstart_hz": 6000000000.0,
+    "fstop_hz": 9000000000.0,
+    "npoints": 51
+  },
+  "mesh": {
+    "resolution": 0.2,
+    "air_margin": 20.0
+  },
+  "air_sphere": {
+    "radius": 60.0,
+    "center": [
+      10.0,
+      10.0,
+      0.0
+    ]
+  },
+  "ports": [
+    {
+      "name": "P1",
+      "type": "lumped_z",
+      "p1": [
+        -2.0,
+        0.0,
+        0.0
+      ],
+      "p2": [
+        -2.0,
+        0.0,
+        0.3
+      ],
+      "direction": "z",
+      "width": 0.5,
+      "face_size": 0.5,
+      "z0": 50.0
+    },
+    {
+      "name": "P2",
+      "type": "lumped_z",
+      "p1": [
+        -2.0,
+        20.0,
+        0.0
+      ],
+      "p2": [
+        -2.0,
+        20.0,
+        0.3
+      ],
+      "direction": "z",
+      "width": 0.5,
+      "face_size": 0.5,
+      "z0": 50.0
+    },
+    {
+      "name": "P3",
+      "type": "lumped_z",
+      "p1": [
+        18.0,
+        0.0,
+        0.0
+      ],
+      "p2": [
+        18.0,
+        0.0,
+        0.3
+      ],
+      "direction": "z",
+      "width": 0.5,
+      "face_size": 0.5,
+      "z0": 50.0
+    },
+    {
+      "name": "P4",
+      "type": "lumped_z",
+      "p1": [
+        18.0,
+        20.0,
+        0.0
+      ],
+      "p2": [
+        18.0,
+        20.0,
+        0.3
+      ],
+      "direction": "z",
+      "width": 0.5,
+      "face_size": 0.5,
+      "z0": 50.0
+    }
+  ],
+  "imports": {
+    "dielectrics": [
+      {
+        "name": "subst",
+        "file": "geometry/2x2_array/subst.step",
+        "material": {
+          "er": 3.48,
+          "tand": 0.0038
+        },
+        "mesh": {
+          "boundary_size": 2.0
+        }
+      }
+    ],
+    "metals": [
+      {
+        "name": "feeds",
+        "file": "geometry/2x2_array/feeds.step",
+        "material": {
+          "kind": "pec_volume"
+        },
+        "mesh": {
+          "boundary_size": 0.5
+        }
+      }
+    ],
+    "surfaces": [
+      {
+        "name": "patches",
+        "file": "geometry/2x2_array/patches.step",
+        "bc": {
+          "kind": "surface_impedance",
+          "sigma": 20000000.0
+        },
+        "mesh": {
+          "face_size": 0.5
+        }
+      },
+      {
+        "name": "ground",
+        "file": "geometry/2x2_array/ground.step",
+        "bc": {
+          "kind": "surface_impedance",
+          "sigma": 20000000.0
+        },
+        "mesh": {
+          "face_size": 2.0
+        }
+      }
+    ]
+  },
+  "preview": {
+    "show_geometry": true,
+    "show_mesh": true
+  },
+  "outputs": {
+    "results_dir": "results",
+    "run_name": "array2x2"
+  },
+  "farfield_export": {
+    "enable": true,
+    "theta_points": 181,
+    "phi_points": 361,
+    "basename": "farfield_3d",
+    "precision": 6
+  },
+  "full_model_step": "geometry/full_model.step"
+}

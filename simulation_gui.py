@@ -68,6 +68,7 @@ class SimulationGui:
         self.cfg = default_config()
         self.current_json_path: Path | None = None
         self.run_process = None
+        self.sim_python: Path | None = None
         self.solid_index_map: list[tuple[str, int]] = []
         self.surface_index_map: list[int] = []
 
@@ -149,6 +150,7 @@ class SimulationGui:
 
         ttk.Button(file_actions, text="SAVE", command=self.save_json).pack(side=tk.LEFT, padx=4)
         ttk.Button(file_actions, text="LOAD", command=self.load_json).pack(side=tk.LEFT, padx=4)
+        ttk.Button(file_actions, text="SHOW GEOMETRY", command=self.show_geometry).pack(side=tk.LEFT, padx=4)
         ttk.Button(file_actions, text="RUN", command=self.run_simulation).pack(side=tk.LEFT, padx=4)
 
         self.status_var = tk.StringVar(value="Ready")
@@ -635,6 +637,119 @@ class SimulationGui:
         self.status_var.set(f"Loaded: {path.name}")
         self.log(f"Loaded JSON: {path}")
 
+    def _ensure_saved(self, prompt: str) -> bool:
+        """Ensure the config is saved; return False if the user cancels."""
+        if not self.current_json_path:
+            if not messagebox.askyesno("Save first", f"Config not saved yet. Save now before {prompt}?"):
+                return False
+            self.save_json()
+            if not self.current_json_path:
+                return False
+        return True
+
+    def _candidate_python_executables(self) -> list[Path]:
+        candidates: list[Path] = []
+        current = Path(sys.executable).resolve()
+        candidates.append(current)
+
+        if sys.platform.startswith("win"):
+            base_python = Path(sys.base_prefix) / "python.exe"
+        else:
+            base_python = Path(sys.base_prefix) / "bin" / "python"
+        candidates.append(base_python.resolve())
+
+        seen: set[str] = set()
+        unique_candidates: list[Path] = []
+        for candidate in candidates:
+            key = str(candidate).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_candidates.append(candidate)
+        return unique_candidates
+
+    def _python_supports_sim(self, python_exe: Path) -> tuple[bool, str]:
+        if not python_exe.exists():
+            return False, "interpreter not found"
+        try:
+            probe = subprocess.run(
+                [str(python_exe), "-c", "import numpy, emerge"],
+                cwd=str(self.workspace),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception as exc:
+            return False, str(exc)
+        if probe.returncode == 0:
+            return True, "ok"
+        message = (probe.stderr or probe.stdout or f"exit {probe.returncode}").strip()
+        return False, message
+
+    def _resolve_sim_python(self) -> Path:
+        if self.sim_python is not None:
+            return self.sim_python
+
+        failures: list[str] = []
+        for candidate in self._candidate_python_executables():
+            ok, detail = self._python_supports_sim(candidate)
+            if ok:
+                self.sim_python = candidate
+                self.log(f"Using Python interpreter: {candidate}")
+                return candidate
+            failures.append(f"{candidate}: {detail}")
+
+        details = "\n".join(failures) if failures else "No Python interpreters were checked."
+        raise RuntimeError(
+            "No compatible Python interpreter found for EMerge simulation. "
+            "The interpreter must provide both numpy and emerge.\n" + details
+        )
+
+    def show_geometry(self):
+        self._sync_form_to_config()
+
+        if not self.sim_script.exists():
+            messagebox.showerror("Missing script", f"Cannot find simulator script:\n{self.sim_script}")
+            return
+
+        if not self._ensure_saved("SHOW GEOMETRY"):
+            return
+
+        try:
+            python_exe = self._resolve_sim_python()
+        except RuntimeError as exc:
+            messagebox.showerror("Python environment error", str(exc))
+            self.log(str(exc))
+            return
+
+        cmd = [str(python_exe), str(self.sim_script), str(self.current_json_path), "--show-geometry-only"]
+        self.log("Show geometry: " + " ".join(cmd))
+        self.status_var.set("Opening geometry viewer...")
+
+        def worker():
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(self.workspace),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    self.log(line.rstrip("\n"))
+                code = proc.wait()
+                if code == 0:
+                    self.status_var.set("Geometry viewer closed")
+                else:
+                    self.status_var.set(f"Geometry viewer exited with code {code}")
+            except Exception as exc:
+                self.status_var.set("Geometry launch failed")
+                self.log(f"Show geometry failed: {exc}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def run_simulation(self):
         self._sync_form_to_config()
 
@@ -642,15 +757,17 @@ class SimulationGui:
             messagebox.showerror("Missing script", f"Cannot find simulator script:\n{self.sim_script}")
             return
 
-        if not self.current_json_path:
-            ask = messagebox.askyesno("Save first", "Config not saved yet. Save now before RUN?")
-            if not ask:
-                return
-            self.save_json()
-            if not self.current_json_path:
-                return
+        if not self._ensure_saved("RUN"):
+            return
 
-        cmd = [sys.executable, str(self.sim_script), str(self.current_json_path)]
+        try:
+            python_exe = self._resolve_sim_python()
+        except RuntimeError as exc:
+            messagebox.showerror("Python environment error", str(exc))
+            self.log(str(exc))
+            return
+
+        cmd = [str(python_exe), str(self.sim_script), str(self.current_json_path), "--non-interactive-preview"]
         self.log("Running: " + " ".join(cmd))
         self.status_var.set("Simulation running...")
 
