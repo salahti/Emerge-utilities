@@ -1,0 +1,163 @@
+{
+  "comment": "Unified EMerge simulation configuration. Supports any number of ports (1, 4, or more) - just adjust the 'ports' array below.",
+  
+  "units": "mm",
+
+  "sweep": {
+    "fstart_hz": 6.5e9,
+    "fstop_hz": 9e9,
+    "npoints": 28,
+    "_comment": "Frequency sweep range in Hz and number of points"
+  },
+
+  "mesh": {
+    "resolution": 0.2,
+    "air_margin": 20.0,
+    "_comment": "Global mesh resolution and air sphere margin"
+  },
+
+  "air_sphere": {
+    "radius": 20.0,
+    "center": [0.0, 0.0, 0.0],
+    "_comment": "Optional: manual air sphere definition. Omit this block to auto-size from geometry."
+  },
+
+  "ports": [
+    {
+      "name": "Port1",
+      "type": "lumped_z",
+      "p1": [-2.0, 0.0, 0.0],
+      "p2": [-2.0, 0.0, 0.3],
+      "width": 0.5,
+      "face_size": 0.25,
+      "z0": 50.0,
+      "_comment": "Single 1-port example. Change entire 'ports' array for 4-port or N-port."
+    }
+  ],
+
+  "ports_4port_example": [
+    {
+      "name": "P1",
+      "type": "lumped_z",
+      "p1": [-12.0, -10.0, 0.3],
+      "p2": [-12.0, -10.0, 0.0],
+      "width": 0.5,
+      "face_size": 0.25,
+      "z0": 50.0
+    },
+    {
+      "name": "P2",
+      "type": "lumped_z",
+      "p1": [8.0, -10.0, 0.3],
+      "p2": [8.0, -10.0, 0.0],
+      "width": 0.5,
+      "face_size": 0.25,
+      "z0": 50.0
+    },
+    {
+      "name": "P3",
+      "type": "lumped_z",
+      "p1": [-12.0, 10.0, 0.3],
+      "p2": [-12.0, 10.0, 0.0],
+      "width": 0.5,
+      "face_size": 0.25,
+      "z0": 50.0
+    },
+    {
+      "name": "P4",
+      "type": "lumped_z",
+      "p1": [8.0, 10.0, 0.3],
+      "p2": [8.0, 10.0, 0.0],
+      "width": 0.5,
+      "face_size": 0.25,
+      "z0": 50.0
+    }
+  ],
+
+  "imports": {
+    "dielectrics": [
+      {
+        "name": "substrate",
+        "file": "geometry/dielectric.step",
+        "material": {
+          "er": 3.48,
+          "tand": 0.0037
+        },
+        "mesh": {
+          "boundary_size": 2.0
+        },
+        "_comment": "Dielectric volume: permittivity (er) and loss (tand)"
+      }
+    ],
+
+    "metals": [
+      {
+        "name": "metal_structures",
+        "file": "geometry/metals.step",
+        "material": {
+          "kind": "pec_volume"
+        },
+        "mesh": {
+          "boundary_size": 0.5
+        },
+        "_comment": "Metal volume: kind can be 'pec_volume' or 'conductor_volume' (with sigma)"
+      }
+    ],
+
+    "surfaces": [
+      {
+        "name": "antenna",
+        "file": "geometry/patch.step",
+        "bc": {
+          "kind": "pec"
+        },
+        "mesh": {
+          "face_size": 0.4
+        },
+        "_comment": "Surface boundary condition: 'pec' or 'surface_impedance' (with sigma)"
+      },
+      {
+        "name": "ground",
+        "file": "geometry/gnd.step",
+        "bc": {
+          "kind": "pec"
+        },
+        "mesh": {
+          "face_size": 1.0
+        }
+      }
+    ]
+  },
+
+  "preview": {
+    "show_geometry": true,
+    "show_mesh": true,
+    "_comment": "Show geometry and mesh previews (will pause for user confirmation)"
+  },
+
+  "outputs": {
+    "results_dir": "results",
+    "run_name": "test_simulation",
+    "_comment": "Output folder path and base name for this run"
+  },
+
+  "farfield_export": {
+    "enable": true,
+    "theta_points": 181,
+    "phi_points": 361,
+    "basename": "farfield_3d",
+    "precision": 6,
+    "_comment": "3D farfield export per port: theta=[0..π], phi=[-π..π]"
+  },
+
+  "full_model_step": "geometry/full_model.step",
+
+  "_INSTRUCTIONS": {
+    "to_run_1port": "Use the 'ports' array with 1 element (single port)",
+    "to_run_4port": "Replace entire 'ports' array with 'ports_4port_example' array above",
+    "to_run_nport": "Add N port objects to the 'ports' array with desired coordinates",
+    "materials": "Define dielectrics and metals as volumetric imports; surfaces as BC-controlled imports",
+    "air_sphere": "Omit to auto-size from geometry bounds, or specify manually with radius+center",
+    "touchstone_export": "Automatically exports .s1p for 1-port, .s4p for 4-port, .sNp for N-port"
+  }
+}
