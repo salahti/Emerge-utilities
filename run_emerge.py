@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -292,6 +293,69 @@ def resolve_simdata_dir(run_dir: Path, base_name: str) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     return out
 
+
+def move_emerge_files_to_simdata_dir(
+    run_dir: Path,
+    workspace_dir: Path,
+    simdata_dir: Path,
+    base_name: str,
+    run_started_ts: float,
+) -> list[Path]:
+    """
+    Move .emerge dataset files produced by this run into simdata_dir.
+
+    EMerge may write simdata.emerge either in run_dir, or into a sibling
+    <base_name>.EMResults folder under the workspace directory. We scan both
+    locations and only move files updated during this run.
+    """
+    moved: list[Path] = []
+    simdata_dir.mkdir(parents=True, exist_ok=True)
+
+    candidate_parents = [run_dir, workspace_dir]
+    candidate_dirs: list[Path] = []
+
+    for parent in candidate_parents:
+        candidate_dirs.append(parent)
+        for d in parent.iterdir():
+            if (
+                d.is_dir()
+                and d.name.lower().startswith(base_name.lower())
+                and "emresult" in d.name.lower()
+            ):
+                candidate_dirs.append(d)
+
+    seen: set[Path] = set()
+    for cdir in candidate_dirs:
+        for src in cdir.glob("*.emerge"):
+            src_resolved = src.resolve()
+            if src_resolved in seen:
+                continue
+            seen.add(src_resolved)
+
+            # Avoid moving stale files from older runs.
+            if src.stat().st_mtime < (run_started_ts - 2.0):
+                continue
+
+            dst = simdata_dir / src.name
+            if src_resolved == dst.resolve():
+                continue
+
+            if dst.exists():
+                dst.unlink()
+
+            shutil.move(str(src), str(dst))
+            moved.append(dst)
+
+    # Remove empty, now-unused .EMResults dirs under workspace root.
+    for d in workspace_dir.iterdir():
+        if d.is_dir() and d.name.lower().startswith(base_name.lower()) and "emresult" in d.name.lower():
+            try:
+                next(d.iterdir())
+            except StopIteration:
+                d.rmdir()
+
+    return moved
+
 # ----------------------------- Main ------------------------------------
 
 def main():
@@ -311,6 +375,7 @@ def main():
 
     run_dir = results_dir / f"{timestamp_tag()}_{base_name}"
     run_dir.mkdir(parents=True, exist_ok=True)
+    run_started_ts = time.time()
 
     # Units, sweep, mesh, port
     u = unit_scale(cfg.get("units", "mm"))
@@ -707,6 +772,18 @@ def main():
 
         # Save after all globals/meta updates are ready.
         model.save()
+
+        moved_emerge_files = move_emerge_files_to_simdata_dir(
+            run_dir=run_dir,
+            workspace_dir=old_cwd,
+            simdata_dir=simdata_dir,
+            base_name=base_name,
+            run_started_ts=run_started_ts,
+        )
+        if moved_emerge_files:
+            print("Moved EMerge dataset file(s) into simulation results folder:")
+            for p in moved_emerge_files:
+                print(f"  {p}")
 
         print("\nSaved EMerge dataset into this run folder:")
         print(f"  {run_dir}")
