@@ -223,6 +223,34 @@ def read_s2p(path: Path):
     return np.array(ntwk.f, dtype=float), np.array(ntwk.s, dtype=np.complex128)
 
 
+def read_snp_antenna_s11(path: Path, num_ports: int):
+    """
+    Read an N-port Touchstone file and extract diagonal S11 parameters (port i → port i).
+    Returns dict with key "port_k" (0-indexed): {"freqs": ndarray (N,), "s11": ndarray (N,)}.
+    Ignores off-diagonal mutual couplings.
+    """
+    if rf is None:
+        raise RuntimeError("scikit-rf required for .snp files. Install with: pip install scikit-rf")
+    
+    ntwk = rf.Network(str(path))
+    if ntwk.number_of_ports != num_ports:
+        raise ValueError(
+            f"Expected {num_ports}-port network, got {ntwk.number_of_ports} ports in {path.name}"
+        )
+    
+    freqs = np.array(ntwk.f, dtype=float)
+    sparams = np.array(ntwk.s, dtype=np.complex128)  # (Nfreq, num_ports, num_ports)
+    
+    result = {}
+    for k in range(num_ports):
+        result[f"port_{k}"] = {
+            "freqs": freqs,
+            "s11": sparams[:, k, k].copy(),
+        }
+    
+    return result
+
+
 def mag_over_eiso(Etheta, Ephi, pol: str):
     pol = pol.upper()
 
@@ -277,6 +305,10 @@ class ArrayPatternApp:
         # Per-port matching circuits: list[dict|None], one entry per loaded element.
         # Each dict: {"path": Path, "freqs": ndarray (N,), "sparams": ndarray (N,2,2)}
         self.match_circuits: list = []
+
+        # Per-port antenna S11 data: dict with keys "port_0", "port_1", ...
+        # Each key maps to {"freqs": ndarray (N,), "s11": ndarray (N,)} (diagonal S11 only).
+        self.antenna_s11_data: dict | None = None
 
         self._build_ui()
 
@@ -505,6 +537,15 @@ class ArrayPatternApp:
         self.freq_list.selection_clear(0, tk.END)
         self.freq_list.selection_set(0)
 
+        # Auto-load antenna S11 if available
+        self.antenna_s11_data = None
+        snp_file = self._find_antenna_snp(run_dir, nf)
+        if snp_file:
+            try:
+                self.antenna_s11_data = read_snp_antenna_s11(snp_file, nf)
+            except Exception as e:
+                print(f"Warning: Could not load antenna S11 from {snp_file.name}: {e}")
+
         self._rebuild_element_controls(nf)
 
         self.status.set(f"Loaded {nf} EMFF file(s) from: {run_dir.name}")
@@ -558,22 +599,59 @@ class ArrayPatternApp:
         self.match_label_vars[k].set(s2p_path.name)
         self.status.set(f"Matching circuit for P{port_num}: {s2p_path.name}")
 
-    def _matching_s21_for_port(self, k: int, f_hz: float) -> complex:
+    def _matching_s21_for_port(self, k: int, f_hz: float) -> float:
         """
-        Return the complex S21 of the matching circuit on port k at frequency f_hz (Hz).
-        Returns 1+0j (no effect) when no matching circuit is loaded for that port.
+        Return power correction factor |S21|² / |1 - S22·Γ_ant|² for matching circuit on port k.
+        If no matching circuit or antenna S11 loaded, returns 1.0 (no correction).
+        Formula: Pout/Pin = |S21|² / |1 - S22·Γ_ant|² accounts for mismatch loss.
         """
         mc = self.match_circuits[k] if k < len(self.match_circuits) else None
         if mc is None:
-            return 1.0 + 0.0j
-        s21 = interp_complex_1d(mc["freqs"], mc["sparams"][:, 1, 0], float(f_hz))
-        return complex(s21)
+            return 1.0
 
+        # Get antenna S11 (reflection coefficient)
+        ant_data = None
+        if self.antenna_s11_data:
+            ant_data = self.antenna_s11_data.get(f"port_{k}", None)
+        
+        if ant_data is None:
+            # No antenna S11, use just |S21|² (ignores mismatch loss)
+            s21 = interp_complex_1d(mc["freqs"], mc["sparams"][:, 1, 0], float(f_hz))
+            return float(np.abs(s21) ** 2)
+        
+        # Get matching network parameters
+        s21_m = interp_complex_1d(mc["freqs"], mc["sparams"][:, 1, 0], float(f_hz))
+        s22_m = interp_complex_1d(mc["freqs"], mc["sparams"][:, 1, 1], float(f_hz))
+        
+        # Get antenna S11 (reflection coefficient)
+        gamma_ant = interp_complex_1d(ant_data["freqs"], ant_data["s11"], float(f_hz))
+        
+        # Power ratio: |S21|² / |1 - S22·Γ_ant|²
+        den = np.abs(1.0 - s22_m * gamma_ant) ** 2
+        den = max(float(den), 1e-300)
+        ratio = float(np.abs(s21_m) ** 2) / den
+        
+        return max(float(ratio), 0.0) if np.isfinite(ratio) else 1.0
 
+    def _find_antenna_snp(self, search_dir: Path, num_ports: int) -> Path | None:
+        """
+        Search for an N-port Touchstone file (*.snp) in the given directory.
+        Looks for common patterns like *.s2p, *.s4p, etc. matching num_ports.
+        Returns the first match found, or None.
+        """
+        snp_pattern = f"*.s{num_ports}p"
+        matches = sorted(search_dir.glob(snp_pattern))
+        if matches:
+            return matches[0]
+        
+        # Fallback: try parent directory
+        if search_dir.parent != search_dir:
+            matches = sorted(search_dir.parent.glob(snp_pattern))
+            if matches:
+                return matches[0]
+        
+        return None
 
-    # ------------------------------------------------------------------ #
-    # Selection helpers                                                    #
-    # ------------------------------------------------------------------ #
 
     def _selected_freq_index(self):
         sel = self.freq_list.curselection()
@@ -682,6 +760,7 @@ class ArrayPatternApp:
 
     def _compute_plane_db(self, idx_f: int, plane: str, pol: str, floor_db: float, normalize: bool):
         w = self._element_weights()
+        f_hz = float(self.freqs[idx_f])
 
         ang_ref = None
         Etheta_sum = None
@@ -698,9 +777,11 @@ class ArrayPatternApp:
                 if len(ang) != len(ang_ref) or np.max(np.abs(ang - ang_ref)) > 1e-12:
                     raise ValueError(f"Angle grid mismatch for plane {plane} in {el['path'].name}")
 
-            s21 = self._matching_s21_for_port(k, float(self.freqs[idx_f]))
-            Etheta_sum += w[k] * s21 * Etheta
-            Ephi_sum += w[k] * s21 * Ephi
+            # Apply per-port excitation weight and matching power correction
+            power_factor = self._matching_s21_for_port(k, f_hz)
+            correction = np.sqrt(power_factor)  # Convert power factor to amplitude correction
+            Etheta_sum += w[k] * correction * Etheta
+            Ephi_sum += w[k] * correction * Ephi
 
         mag = mag_over_eiso(Etheta_sum, Ephi_sum, pol)
         db = to_db_20(mag, floor_db=floor_db)
@@ -845,9 +926,11 @@ class ArrayPatternApp:
                     Ey = el["Ey"][idx_f, :, :]
                     Ez = el["Ez"][idx_f, :, :]
                     Etheta, Ephi = cart_to_sph_E(Ex, Ey, Ez, th_grid, ph_grid)
-                    s21 = self._matching_s21_for_port(k, f_hz)
-                    Etheta_sum += w[k] * s21 * Etheta
-                    Ephi_sum   += w[k] * s21 * Ephi
+                    # Apply per-port excitation weight and matching power correction
+                    power_factor = self._matching_s21_for_port(k, f_hz)
+                    correction = np.sqrt(power_factor)  # Convert power factor to amplitude correction
+                    Etheta_sum += w[k] * correction * Etheta
+                    Ephi_sum   += w[k] * correction * Ephi
 
                 mag = mag_over_eiso(Etheta_sum, Ephi_sum, pol)
                 max_gain_db[idx_f] = 20.0 * np.log10(max(float(np.max(mag)), 1e-300))
