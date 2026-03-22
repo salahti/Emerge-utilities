@@ -1,0 +1,87 @@
+{
+  "units": "mm",
+
+  "sweep": {
+    "fstart_hz": 6.5e9,
+    "fstop_hz": 9e9,
+    "npoints": 28
+  },
+
+  "mesh": {
+    "resolution": 0.2,
+    "air_margin": 20.0
+  },
+
+  "air_sphere": {
+    "radius": 20.0,
+    "center": [0.0, 0.0, 0.0]
+  },
+
+  "port": {
+    "type": "lumped_z",
+    "p1": [-2.0, 0.0, 0.0],
+    "p2": [-2.0, 0.0, 0.3],
+    "width": 0.5,
+    "face_size": 0.25,
+    "z0": 50.0
+  },
+
+  "imports": {
+    "dielectrics": [
+      {
+        "name": "substrate",
+        "file": "geometry/dielectric.step",
+        "material": { "er": 3.48, "tand": 0.0037 },
+        "mesh": { "boundary_size": 2 }
+      }
+    ],
+
+     "metals": [
+      {
+        "name": "metals",
+        "file": "geometry/metals.step",
+        "material": { "kind": "pec_volume" },
+        "mesh": { "boundary_size": 0.5 }
+      }
+      ],
+    
+    "surfaces": [
+      
+	
+	  {
+        "name": "ANTENNA",
+        "file": "geometry/patch.step",
+        "bc": { "kind": "pec"},
+        "mesh": { "face_size": 0.4}
+      },
+
+    {
+        "name": "GND",
+        "file": "geometry/gnd.step",
+        "bc": { "kind": "pec"},
+        "mesh": { "face_size": 1 }
+      }
+    ]
+  },
+
+  "preview": {
+    "show_geometry": true,
+    "show_mesh": true
+  },
+
+  "outputs": {
+    "results_dir": "results",
+    "run_name": "",
+    "save_farfield": true,
+    "farfield_planes": ["xy", "xz", "yz"],
+    "farfield_all_freqs": true
+  },
+
+  "farfield_export": {
+    "enable": true,
+    "theta_points": 181,
+    "phi_points": 361,
+    "basename": "farfield_3d",
+    "precision": 6
+  }
+}
