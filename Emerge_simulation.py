@@ -89,6 +89,12 @@ def selection_face_tags(sel):
         pass
     raise RuntimeError("Could not extract face tags from selection")
 
+def extend_preview_surfaces(container, geometry_items):
+    """Append geometry surfaces for preview if the object exposes them."""
+    for geom, _ in geometry_items:
+        surfaces = getattr(geom, "surfaces", None)
+        if surfaces:
+            container.extend(surfaces)
 
 def make_port_plate_z(p1_m: np.ndarray, p2_m: np.ndarray, width_m: float) -> tuple[em.geo.Plate, float]:
     """
@@ -353,6 +359,16 @@ def main():
         default="define_simulation.json",
         help="Path to simulation JSON file (default: define_simulation.json)",
     )
+    parser.add_argument(
+        "--show-geometry-only",
+        action="store_true",
+        help="Build geometry, open the 3-D viewer, then exit without meshing or solving.",
+    )
+    parser.add_argument(
+        "--non-interactive-preview",
+        action="store_true",
+        help="Skip preview confirmation prompts after the viewer closes.",
+    )
     args = parser.parse_args()
 
     cfg_path = Path(args.config).resolve()
@@ -416,6 +432,28 @@ def main():
     preview = cfg.get("preview", {})
     show_geometry = bool(preview.get("show_geometry", False))
     show_mesh = bool(preview.get("show_mesh", False))
+    geometry_only = bool(args.show_geometry_only)
+    non_interactive_preview = bool(args.non_interactive_preview)
+    if geometry_only:
+        show_geometry = True
+        show_mesh = False
+
+    def should_continue_after_preview(stage: str) -> bool:
+        if non_interactive_preview:
+            print(f"[INFO] {stage} preview closed. Continuing automatically (--non-interactive-preview).")
+            return True
+        while True:
+            try:
+                ans = input(f"Continue after {stage} preview? [Y/N]: ").strip().lower()
+            except EOFError:
+                print(f"[WARN] No interactive stdin available after {stage} preview. Continuing automatically.")
+                return True
+            if ans in ("", "y", "yes"):
+                return True
+            if ans in ("n", "no"):
+                print(f"Stopping at {stage} preview.")
+                return False
+            print("Please answer Y or N.")
 
     # Resolve ALL input paths BEFORE changing cwd
     imports = cfg["imports"]
@@ -578,14 +616,11 @@ def main():
 
         if show_geometry:
             model.view(labels=True)
-            while True:
-                ans = input("Continue with meshing and simulation? [Y/N]: ").strip().lower()
-                if ans in ("", "y", "yes"):
-                    break
-                if ans in ("n", "no"):
-                    print("Stopping at geometry preview.")
-                    return
-                print("Please answer Y or N.")
+            if geometry_only:
+                print("Geometry preview done. Exiting.")
+                return
+            if not should_continue_after_preview("geometry"):
+                return
 
         # --- Mesh controls
         for plate, fs in zip(port_plates, port_face_sizes):
@@ -648,18 +683,17 @@ def main():
 
         if show_mesh:
             mesh_sel = []
+            extend_preview_surfaces(mesh_sel, dielectric_items)
+            extend_preview_surfaces(mesh_sel, metal_items)
             for si, _ in surface_items:
                 mesh_sel.extend(si.surfaces)
-            model.view(selections=mesh_sel, plot_mesh=True, volume_mesh=False)
-
-            while True:
-                ans = input("Continue with boundary conditions and simulation? [Y/N]: ").strip().lower()
-                if ans in ("", "y", "yes"):
-                    break
-                if ans in ("n", "no"):
-                    print("Stopping at mesh preview.")
-                    return
-                print("Please answer Y or N.")
+            if mesh_sel:
+                model.view(selections=mesh_sel, plot_mesh=True, volume_mesh=False)
+            else:
+                print("[WARN] Could not isolate non-air faces for mesh preview; showing full mesh.")
+                model.view(plot_mesh=True, volume_mesh=False)
+            if not should_continue_after_preview("mesh"):
+                return
 
         # --- Boundary conditions
         model.mw.bc.AbsorbingBoundary(boundary_selection)

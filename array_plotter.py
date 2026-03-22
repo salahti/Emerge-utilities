@@ -13,13 +13,27 @@
 # or any *.emff files found in the selected folder (2-16 files)
 
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
 
+try:
+    import skrf as rf
+except Exception:
+    rf = None
+
 import emerge as em
+
+
+# ---------------------- Frequency band overlays ----------------------
+# Each entry: (f_start_GHz, f_stop_GHz, label, color)
+# Edit freely – bands are drawn as light shaded regions on the gain vs. freq plot.
+FREQ_BANDS = [
+    (7.25, 7.75, "Downlink (Space-to-Earth)", "#4da6ff"),   # blue
+    (7.90, 8.40, "Uplink (Earth-to-Space)",   "#ff884d"),   # orange
+]
 
 
 # ---------------------- EMFF parsing ----------------------
@@ -185,6 +199,58 @@ def nearest_index(arr, target):
     return int(np.argmin(np.abs(arr - target)))
 
 
+def interp_complex_1d(x, y, x_new):
+    """Linear interpolation for complex-valued 1-D data (extrapolates at edges)."""
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=np.complex128)
+    re = np.interp(x_new, x, np.real(y))
+    im = np.interp(x_new, x, np.imag(y))
+    return re + 1j * im
+
+
+def read_s2p(path: Path):
+    """
+    Read a 2-port Touchstone file.  Returns (freqs_hz ndarray (N,), sparams ndarray (N,2,2)).
+    Requires scikit-rf (pip install scikit-rf).
+    """
+    if rf is None:
+        raise RuntimeError(
+            "scikit-rf is required to read .s2p files.\nInstall with:  pip install scikit-rf"
+        )
+    ntwk = rf.Network(str(path))
+    if ntwk.number_of_ports != 2:
+        raise ValueError(f"Expected a 2-port network, got {ntwk.number_of_ports} ports.")
+    return np.array(ntwk.f, dtype=float), np.array(ntwk.s, dtype=np.complex128)
+
+
+def read_snp_antenna_s11(path: Path, num_ports: int):
+    """
+    Read an N-port Touchstone file and extract diagonal S11 parameters (port i → port i).
+    Returns dict with key "port_k" (0-indexed): {"freqs": ndarray (N,), "s11": ndarray (N,)}.
+    Ignores off-diagonal mutual couplings.
+    """
+    if rf is None:
+        raise RuntimeError("scikit-rf required for .snp files. Install with: pip install scikit-rf")
+    
+    ntwk = rf.Network(str(path))
+    if ntwk.number_of_ports != num_ports:
+        raise ValueError(
+            f"Expected {num_ports}-port network, got {ntwk.number_of_ports} ports in {path.name}"
+        )
+    
+    freqs = np.array(ntwk.f, dtype=float)
+    sparams = np.array(ntwk.s, dtype=np.complex128)  # (Nfreq, num_ports, num_ports)
+    
+    result = {}
+    for k in range(num_ports):
+        result[f"port_{k}"] = {
+            "freqs": freqs,
+            "s11": sparams[:, k, k].copy(),
+        }
+    
+    return result
+
+
 def mag_over_eiso(Etheta, Ephi, pol: str):
     pol = pol.upper()
 
@@ -228,6 +294,22 @@ class ArrayPatternApp:
         self.amp_vars: list[tk.StringVar] = []
         self.phase_vars: list[tk.StringVar] = []
 
+        # Persistent plot figures: plane -> (fig, ax)
+        self._polar_figs: dict[str, tuple] = {}
+        self._cart_figs: dict[str, tuple] = {}
+
+        # Persistent gain-vs-frequency figure
+        self._max_gain_fig = None
+        self._max_gain_ax = None
+
+        # Per-port matching circuits: list[dict|None], one entry per loaded element.
+        # Each dict: {"path": Path, "freqs": ndarray (N,), "sparams": ndarray (N,2,2)}
+        self.match_circuits: list = []
+
+        # Per-port antenna S11 data: dict with keys "port_0", "port_1", ...
+        # Each key maps to {"freqs": ndarray (N,), "s11": ndarray (N,)} (diagonal S11 only).
+        self.antenna_s11_data: dict | None = None
+
         self._build_ui()
 
     def _build_ui(self):
@@ -239,6 +321,9 @@ class ArrayPatternApp:
 
         tk.Button(top, text="LOAD FOLDER", width=18, command=self.load_folder).pack(side="left", padx=4)
         tk.Button(top, text="PLOT", width=18, command=self.plot_selected).pack(side="left", padx=4)
+        tk.Button(top, text="MAX GAIN vs FREQ", width=18, command=self.plot_max_gain_vs_freq).pack(side="left", padx=4)
+        tk.Button(top, text="LOAD MATCHING CIRCUIT", width=22, command=self.load_matching_circuit).pack(side="left", padx=4)
+        tk.Button(top, text="CLEAR PLOTS", width=18, command=self.clear_plots).pack(side="left", padx=4)
 
         self.status = tk.StringVar(value=f"Load a folder with {MIN_PORTS}-{MAX_PORTS} embedded-element *.emff files.")
         tk.Label(outer, textvariable=self.status, anchor="w").pack(fill="x", pady=(0, 8))
@@ -305,9 +390,10 @@ class ArrayPatternApp:
         tk.Label(hdrs, text="Port", width=6, anchor="w").pack(side="left")
         tk.Label(hdrs, text="Ampl.", width=7, anchor="w").pack(side="left")
         tk.Label(hdrs, text="Phase (deg)", width=10, anchor="w").pack(side="left")
+        tk.Label(hdrs, text="Matching", width=16, anchor="w").pack(side="left")
 
         # scrollable canvas for the rows
-        canvas = tk.Canvas(exc_outer, width=220, height=340, highlightthickness=0)
+        canvas = tk.Canvas(exc_outer, width=340, height=340, highlightthickness=0)
         vsb = tk.Scrollbar(exc_outer, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
@@ -333,6 +419,10 @@ class ArrayPatternApp:
 
         self.amp_vars = []
         self.phase_vars = []
+        self.match_label_vars = []
+        # Preserve existing matching circuits if port count unchanged, else reset.
+        if len(self.match_circuits) != n:
+            self.match_circuits = [None] * n
 
         for k in range(n):
             row = tk.Frame(self.exc_frame)
@@ -344,10 +434,17 @@ class ArrayPatternApp:
             tk.Entry(row, textvariable=amp_v, width=7).pack(side="left", padx=(0, 4))
 
             ph_v = tk.StringVar(value="0")
-            tk.Entry(row, textvariable=ph_v, width=10).pack(side="left")
+            tk.Entry(row, textvariable=ph_v, width=10).pack(side="left", padx=(0, 4))
+
+            mc = self.match_circuits[k]
+            match_text = mc["path"].name if mc else "\u2014"
+            m_v = tk.StringVar(value=match_text)
+            tk.Label(row, textvariable=m_v, width=16, anchor="w",
+                     fg="#006600" if mc else "gray").pack(side="left")
 
             self.amp_vars.append(amp_v)
             self.phase_vars.append(ph_v)
+            self.match_label_vars.append(m_v)
 
         # refresh canvas scroll region
         self.exc_frame.update_idletasks()
@@ -440,6 +537,15 @@ class ArrayPatternApp:
         self.freq_list.selection_clear(0, tk.END)
         self.freq_list.selection_set(0)
 
+        # Auto-load antenna S11 if available
+        self.antenna_s11_data = None
+        snp_file = self._find_antenna_snp(run_dir, nf)
+        if snp_file:
+            try:
+                self.antenna_s11_data = read_snp_antenna_s11(snp_file, nf)
+            except Exception as e:
+                print(f"Warning: Could not load antenna S11 from {snp_file.name}: {e}")
+
         self._rebuild_element_controls(nf)
 
         self.status.set(f"Loaded {nf} EMFF file(s) from: {run_dir.name}")
@@ -451,8 +557,101 @@ class ArrayPatternApp:
         )
 
     # ------------------------------------------------------------------ #
-    # Selection helpers                                                    #
+    # Matching circuit                                                     #
     # ------------------------------------------------------------------ #
+
+    def load_matching_circuit(self):
+        if not self.elements:
+            messagebox.showinfo("No data", "Load a folder with EMFF files first.")
+            return
+
+        p = filedialog.askopenfilename(
+            title="Select matching network Touchstone file (*.s2p)",
+            filetypes=[("Touchstone 2-port", "*.s2p *.S2P"), ("All files", "*.*")],
+        )
+        if not p:
+            return
+
+        s2p_path = Path(p)
+        try:
+            match_freqs, match_sparams = read_s2p(s2p_path)
+        except Exception as e:
+            messagebox.showerror("S2P load error", f"Failed to parse:\n{s2p_path}\n\n{e}")
+            return
+
+        n = len(self.elements)
+        port_num = simpledialog.askinteger(
+            "Select port",
+            f"Apply matching circuit to which port? (1\u2013{n})",
+            minvalue=1,
+            maxvalue=n,
+            parent=self.root,
+        )
+        if port_num is None:
+            return
+
+        k = port_num - 1
+        self.match_circuits[k] = {
+            "path": s2p_path,
+            "freqs": match_freqs,
+            "sparams": match_sparams,
+        }
+        self.match_label_vars[k].set(s2p_path.name)
+        self.status.set(f"Matching circuit for P{port_num}: {s2p_path.name}")
+
+    def _matching_s21_for_port(self, k: int, f_hz: float) -> float:
+        """
+        Return power correction factor |S21|² / |1 - S22·Γ_ant|² for matching circuit on port k.
+        If no matching circuit or antenna S11 loaded, returns 1.0 (no correction).
+        Formula: Pout/Pin = |S21|² / |1 - S22·Γ_ant|² accounts for mismatch loss.
+        """
+        mc = self.match_circuits[k] if k < len(self.match_circuits) else None
+        if mc is None:
+            return 1.0
+
+        # Get antenna S11 (reflection coefficient)
+        ant_data = None
+        if self.antenna_s11_data:
+            ant_data = self.antenna_s11_data.get(f"port_{k}", None)
+        
+        if ant_data is None:
+            # No antenna S11, use just |S21|² (ignores mismatch loss)
+            s21 = interp_complex_1d(mc["freqs"], mc["sparams"][:, 1, 0], float(f_hz))
+            return float(np.abs(s21) ** 2)
+        
+        # Get matching network parameters
+        s21_m = interp_complex_1d(mc["freqs"], mc["sparams"][:, 1, 0], float(f_hz))
+        s22_m = interp_complex_1d(mc["freqs"], mc["sparams"][:, 1, 1], float(f_hz))
+        
+        # Get antenna S11 (reflection coefficient)
+        gamma_ant = interp_complex_1d(ant_data["freqs"], ant_data["s11"], float(f_hz))
+        
+        # Power ratio: |S21|² / |1 - S22·Γ_ant|²
+        den = np.abs(1.0 - s22_m * gamma_ant) ** 2
+        den = max(float(den), 1e-300)
+        ratio = float(np.abs(s21_m) ** 2) / den
+        
+        return max(float(ratio), 0.0) if np.isfinite(ratio) else 1.0
+
+    def _find_antenna_snp(self, search_dir: Path, num_ports: int) -> Path | None:
+        """
+        Search for an N-port Touchstone file (*.snp) in the given directory.
+        Looks for common patterns like *.s2p, *.s4p, etc. matching num_ports.
+        Returns the first match found, or None.
+        """
+        snp_pattern = f"*.s{num_ports}p"
+        matches = sorted(search_dir.glob(snp_pattern))
+        if matches:
+            return matches[0]
+        
+        # Fallback: try parent directory
+        if search_dir.parent != search_dir:
+            matches = sorted(search_dir.parent.glob(snp_pattern))
+            if matches:
+                return matches[0]
+        
+        return None
+
 
     def _selected_freq_index(self):
         sel = self.freq_list.curselection()
@@ -561,6 +760,7 @@ class ArrayPatternApp:
 
     def _compute_plane_db(self, idx_f: int, plane: str, pol: str, floor_db: float, normalize: bool):
         w = self._element_weights()
+        f_hz = float(self.freqs[idx_f])
 
         ang_ref = None
         Etheta_sum = None
@@ -577,8 +777,11 @@ class ArrayPatternApp:
                 if len(ang) != len(ang_ref) or np.max(np.abs(ang - ang_ref)) > 1e-12:
                     raise ValueError(f"Angle grid mismatch for plane {plane} in {el['path'].name}")
 
-            Etheta_sum += w[k] * Etheta
-            Ephi_sum += w[k] * Ephi
+            # Apply per-port excitation weight and matching power correction
+            power_factor = self._matching_s21_for_port(k, f_hz)
+            correction = np.sqrt(power_factor)  # Convert power factor to amplitude correction
+            Etheta_sum += w[k] * correction * Etheta
+            Ephi_sum += w[k] * correction * Ephi
 
         mag = mag_over_eiso(Etheta_sum, Ephi_sum, pol)
         db = to_db_20(mag, floor_db=floor_db)
@@ -591,25 +794,54 @@ class ArrayPatternApp:
     # Plotting                                                             #
     # ------------------------------------------------------------------ #
 
-    def _plot_polar(self, ang, db, plane, title, floor_db, db_max):
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection="polar")
-        ax.set_title(title)
-        ax.plot(ang, db)
-        ax.set_rlim(floor_db, db_max)
-        plt.show()
+    def _figure_exists(self, fig) -> bool:
+        return fig is not None and plt.fignum_exists(fig.number)
 
-    def _plot_cartesian(self, ang, db, plane, title, floor_db, db_max):
+    def clear_plots(self):
+        for fig, _ax in self._polar_figs.values():
+            if self._figure_exists(fig):
+                plt.close(fig)
+        self._polar_figs.clear()
+        for fig, _ax in self._cart_figs.values():
+            if self._figure_exists(fig):
+                plt.close(fig)
+        self._cart_figs.clear()
+        if self._figure_exists(self._max_gain_fig):
+            plt.close(self._max_gain_fig)
+        self._max_gain_fig = None
+        self._max_gain_ax = None
+
+    def _plot_polar(self, ang, db, plane, label, floor_db, db_max):
+        if plane not in self._polar_figs or not self._figure_exists(self._polar_figs[plane][0]):
+            fig, ax = plt.subplots(subplot_kw={"projection": "polar"})
+            self._polar_figs[plane] = (fig, ax)
+        else:
+            fig, ax = self._polar_figs[plane]
+        ax.plot(ang, db, label=label)
+        ax.set_title(f"Array Pattern — {plane} (Polar)")
+        ax.set_rlim(floor_db, db_max)
+        ax.legend(loc="best", fontsize="small")
+        fig.tight_layout()
+        fig.show()
+        plt.show(block=False)
+
+    def _plot_cartesian(self, ang, db, plane, label, floor_db, db_max):
         x_deg = np.rad2deg(ang)
-        fig = plt.figure()
-        ax = fig.add_subplot(111)
-        ax.set_title(title)
-        ax.plot(x_deg, db)
+        if plane not in self._cart_figs or not self._figure_exists(self._cart_figs[plane][0]):
+            fig, ax = plt.subplots()
+            self._cart_figs[plane] = (fig, ax)
+        else:
+            fig, ax = self._cart_figs[plane]
+        ax.plot(x_deg, db, label=label)
+        ax.set_title(f"Array Pattern — {plane} (Cartesian)")
         ax.set_xlabel(f"{plane} in-plane angle [deg]")
         ax.set_ylabel("Gain [dBi] (relative to EISO)")
         ax.set_ylim(floor_db, db_max)
         ax.grid(True)
-        plt.show()
+        ax.legend(loc="best", fontsize="small")
+        fig.tight_layout()
+        fig.show()
+        plt.show(block=False)
 
     def plot_selected(self):
         if self.freqs is None or not self.elements:
@@ -644,10 +876,6 @@ class ArrayPatternApp:
 
         fsel = float(self.freqs[idx])
         n = len(self.elements)
-        excitation_txt = "  ".join(
-            f"P{k+1}: {abs(w[k]):.2f}@{np.rad2deg(np.angle(w[k])):.0f}deg"
-            for k in range(n)
-        )
 
         try:
             for plane in planes:
@@ -659,19 +887,81 @@ class ArrayPatternApp:
                     normalize=self.norm_var.get(),
                 )
 
-                title = (
-                    f"{n}-element ARRAY {plane} — {pol} @ {fsel/1e9:.6f} GHz\n"
-                    f"{excitation_txt}"
-                )
+                label = f"{pol} {fsel/1e9:.4f} GHz"
 
                 if plot_type == "POLAR":
-                    self._plot_polar(ang, db, plane, title, floor_db, db_max)
+                    self._plot_polar(ang, db, plane, label, floor_db, db_max)
                 else:
-                    self._plot_cartesian(ang, db, plane, title, floor_db, db_max)
+                    self._plot_cartesian(ang, db, plane, label, floor_db, db_max)
 
         except Exception as e:
             messagebox.showerror("Plot error", str(e))
             return
+
+
+    def plot_max_gain_vs_freq(self):
+        if self.freqs is None or not self.elements:
+            messagebox.showinfo("Nothing loaded", "Load a folder with *.emff files first.")
+            return
+
+        pol = self.pol_var.get().upper()
+
+        try:
+            w = self._element_weights()
+        except Exception as e:
+            messagebox.showerror("Invalid excitation", str(e))
+            return
+
+        try:
+            th_grid, ph_grid = np.meshgrid(self.theta, self.phi, indexing="ij")  # (Nt, Np)
+            max_gain_db = np.zeros(len(self.freqs))
+
+            for idx_f in range(len(self.freqs)):
+                f_hz = float(self.freqs[idx_f])
+                Etheta_sum = np.zeros((len(self.theta), len(self.phi)), dtype=np.complex128)
+                Ephi_sum   = np.zeros((len(self.theta), len(self.phi)), dtype=np.complex128)
+
+                for k, el in enumerate(self.elements):
+                    Ex = el["Ex"][idx_f, :, :]
+                    Ey = el["Ey"][idx_f, :, :]
+                    Ez = el["Ez"][idx_f, :, :]
+                    Etheta, Ephi = cart_to_sph_E(Ex, Ey, Ez, th_grid, ph_grid)
+                    # Apply per-port excitation weight and matching power correction
+                    power_factor = self._matching_s21_for_port(k, f_hz)
+                    correction = np.sqrt(power_factor)  # Convert power factor to amplitude correction
+                    Etheta_sum += w[k] * correction * Etheta
+                    Ephi_sum   += w[k] * correction * Ephi
+
+                mag = mag_over_eiso(Etheta_sum, Ephi_sum, pol)
+                max_gain_db[idx_f] = 20.0 * np.log10(max(float(np.max(mag)), 1e-300))
+
+        except Exception as e:
+            messagebox.showerror("Computation error", str(e))
+            return
+
+        n = len(self.elements)
+        exc_short = "  ".join(
+            f"P{k+1}:{abs(w[k]):.2f}\u2220{np.rad2deg(np.angle(w[k])):.0f}\u00b0"
+            for k in range(n)
+        )
+        trace_label = f"{pol} | {exc_short}"
+
+        if not self._figure_exists(self._max_gain_fig):
+            self._max_gain_fig, self._max_gain_ax = plt.subplots()
+            for f_start, f_stop, band_label, color in FREQ_BANDS:
+                self._max_gain_ax.axvspan(f_start, f_stop, alpha=0.15, color=color, label=band_label)
+            self._max_gain_ax.set_xlabel("Frequency (GHz)")
+            self._max_gain_ax.set_ylabel("Max array gain (dBi)")
+            self._max_gain_ax.grid(True)
+
+        self._max_gain_ax.plot(
+            self.freqs / 1e9, max_gain_db, marker="o", markersize=4, zorder=3, label=trace_label
+        )
+        self._max_gain_ax.set_title("Maximum Array Gain vs Frequency")
+        self._max_gain_ax.legend(loc="best", fontsize="small")
+        self._max_gain_fig.tight_layout()
+        self._max_gain_fig.show()
+        plt.show(block=False)
 
 
 def main():

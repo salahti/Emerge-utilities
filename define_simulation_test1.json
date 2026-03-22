@@ -88,12 +88,12 @@
     ]
   },
   "preview": {
-    "show_geometry": false,
-    "show_mesh": false
+    "show_geometry": true,
+    "show_mesh": true
   },
   "outputs": {
     "results_dir": "results",
-    "run_name": "emerge_run"
+    "run_name": "ahasd"
   },
   "farfield_export": {
     "enable": true,
